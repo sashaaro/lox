@@ -1,6 +1,92 @@
 use std::env;
 use std::fs;
 use std::io::{self, Write};
+use std::str::Chars;
+
+#[derive(Debug)]
+enum Token {
+    LeftParen,
+    RightParen,
+    LeftBrace,
+    RightBrace,
+    COMMA,
+    DOT,
+    MINUS,
+    PLUS,
+    SEMICOLON,
+    SLASH,
+    STAR,
+    BANG,
+    BangEqual,
+    EQUAL,
+    EqualEqual,
+    GREATER,
+    GreaterEqual,
+    LESS,
+    LessEqual,
+    IDENTIFIER,
+    DoubleQuote,
+    SPACE,
+    TAB,
+    NEWLINE,
+
+    // Literals
+    STRING(String),
+    NUMBER(f64),
+
+    ERROR(String),
+}
+
+struct Tokenizer<'a> {
+    source_code: Chars<'a>,
+    line: usize,
+    column: usize,
+}
+
+impl<'a> Tokenizer<'a> {
+    fn new(source_code: Chars) -> Tokenizer {
+        Tokenizer {
+            source_code,
+            line: 1,
+            column: 1,
+        }
+    }
+
+    fn scan_tokens(&self) -> Vec<(char, Token)> {
+        let mut r = vec![];
+        for (i, c) in self.source_code.clone().into_iter().enumerate() {
+            let token: Token = match c {
+                '(' => Token::LeftParen,
+                ')' => Token::RightParen,
+                '{' => Token::LeftBrace,
+                '}' => Token::RightBrace,
+                ',' => Token::COMMA,
+                '.' => Token::DOT,
+                '-' => Token::MINUS,
+                '+' => Token::PLUS,
+                ';' => Token::SEMICOLON,
+                '*' => Token::STAR,
+                '!' => Token::BANG,
+                '=' => Token::EQUAL,
+                '<' => Token::LESS,
+                '>' => Token::GREATER,
+                '/' => Token::SLASH,
+                '"' => Token::DoubleQuote,
+                ' ' => Token::SPACE,
+                '\t' => Token::TAB,
+                '\n' => Token::NEWLINE,
+                _ => Token::ERROR(format!(
+                    // '$' | '#'
+                    "[Line {}] Error: Unexpected character: {}",
+                    self.line, c
+                )),
+            };
+            r.push((c, token));
+        }
+
+        r
+    }
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -20,32 +106,30 @@ fn main() {
             });
 
             if !file_contents.is_empty() {
-                let file_contents_chars = file_contents.chars();
-                for c in file_contents_chars {
-                    match c {
-                        '(' => println!("LEFT_PAREN ( null"),
-                        ')' => println!("RIGHT_PAREN ) null"),
-                        '{' => println!("LEFT_BRACE {{ null"),
-                        '}' => println!("RIGHT_BRACE }} null"),
-                        ',' => println!("COMMA , null"),
-                        '.' => println!("DOT . null"),
-                        '-' => println!("MINUS - null"),
-                        '+' => println!("PLUS + null"),
-                        ';' => println!("SEMICOLON ; null"),
-                        '*' => println!("STAR * null"),
-                        '!' => println!("BANG ! null"),
-                        '=' => println!("EQUAL = null"),
-                        '<' => println!("LESS < null"),
-                        '>' => println!("GREATER > null"),
-                        '/' => println!("SLASH / null"),
-                        '"' => println!("DOUBLE_QUOTE \" null"),
-                        ' ' => println!("SPACE  null"),
-                        '\t' => println!("TAB  null"),
-                        '\n' => println!("NEWLINE  null"),
-                        _ => {}
+                let chars = file_contents.chars();
+                let mut tokens = Tokenizer::new(chars).scan_tokens();
+
+                tokens.sort_by_key(|t| match t.1 {
+                    Token::ERROR(_) => 0,
+                    _ => 1,
+                });
+
+                let has_error = tokens.iter().any(|t| match t.1 {
+                    Token::ERROR(_) => true,
+                    _ => false,
+                });
+
+                for token in tokens {
+                    match token.1 {
+                        Token::ERROR(err) => eprintln!("{}", err),
+                        _ => println!("{:?} {} null", token.1, token.0),
                     }
                 }
+
                 println!("EOF  null");
+                if has_error {
+                    std::process::exit(65);
+                }
             } else {
                 println!("EOF  null"); // Placeholder, remove this line when implementing the scanner
             }

@@ -27,6 +27,21 @@ fn main() {
                         ')' => println!("RIGHT_PAREN ) null"),
                         '{' => println!("LEFT_BRACE {{ null"),
                         '}' => println!("RIGHT_BRACE }} null"),
+                        ',' => println!("COMMA , null"),
+                        '.' => println!("DOT . null"),
+                        '-' => println!("MINUS - null"),
+                        '+' => println!("PLUS + null"),
+                        ';' => println!("SEMICOLON ; null"),
+                        '*' => println!("STAR * null"),
+                        '!' => println!("BANG ! null"),
+                        '=' => println!("EQUAL = null"),
+                        '<' => println!("LESS < null"),
+                        '>' => println!("GREATER > null"),
+                        '/' => println!("SLASH / null"),
+                        '"' => println!("DOUBLE_QUOTE \" null"),
+                        ' ' => println!("SPACE  null"),
+                        '\t' => println!("TAB  null"),
+                        '\n' => println!("NEWLINE  null"),
                         _ => {}
                     }
                 }

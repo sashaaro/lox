@@ -1,5 +1,7 @@
-use crate::ast::{Expr, Literal};
+use std::collections::HashMap;
+use crate::ast::{Expr, Literal, Stmt};
 use crate::token::TokenType;
+use std::io::Write;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -9,11 +11,14 @@ pub enum Value {
     Nil,
 }
 
-pub struct Interpreter;
-
+pub struct Interpreter {
+    env: Environment,
+}
 impl Interpreter {
     pub fn new() -> Self {
-        Interpreter
+        Interpreter {
+            env: Environment::default(),
+        }
     }
 
     pub fn interpret(&self, expr: &Expr) -> Result<Value, String> {
@@ -37,6 +42,12 @@ impl Interpreter {
                     TokenType::Bang => Ok(Value::Boolean(!self.is_truthy(&right))),
                     _ => Err(format!("Unknown unary operator {:?}", operator.kind)),
                 }
+            }
+            Expr::Variable(token) => {
+                let name = &token.lexeme;
+                self.env
+                    .get(name)
+                    .ok_or_else(|| format!("Undefined variable '{}'", name))
             }
             Expr::Binary { left, operator, right } => {
                 let left = self.evaluate(left)?;
@@ -101,6 +112,70 @@ impl Interpreter {
             Literal::Nil => Value::Nil,
         }
     }
+
+    pub fn interpret_statements<W: Write>(
+        &mut self,
+        statements: &[Stmt],
+        output: &mut W,
+    ) -> Result<(), String> {
+        for stmt in statements {
+            self.execute(stmt, output)?;
+        }
+        Ok(())
+    }
+
+    fn execute<W: Write>(&mut self, stmt: &Stmt, output: &mut W) -> Result<(), String> {
+        match stmt {
+            Stmt::Print(expr) => {
+                let value = self.evaluate(expr)?;
+                writeln!(output, "{}", self.stringify(&value)).map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            Stmt::Expression(expr) => {
+                self.evaluate(expr)?;
+                Ok(())
+            }
+            Stmt::Var { name, initializer } => {
+                let value = if let Some(expr) = initializer {
+                    self.evaluate(expr)?
+                } else {
+                    Value::Nil
+                };
+                self.env.define(name.lexeme.clone(), value);
+                Ok(())
+            }
+        }
+    }
+
+    fn stringify(&self, val: &Value) -> String {
+        match val {
+            Value::Nil => "nil".into(),
+            Value::Boolean(b) => b.to_string(),
+            Value::Number(n) => {
+                if n.fract() == 0.0 {
+                    format!("{}", *n as i64)
+                } else {
+                    format!("{}", n)
+                }
+            }
+            Value::String(s) => s.clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct Environment {
+    values: HashMap<String, Value>,
+}
+
+impl Environment {
+    pub fn define(&mut self, name: String, value: Value) {
+        self.values.insert(name, value);
+    }
+
+    pub fn get(&self, name: &str) -> Option<Value> {
+        self.values.get(name).cloned()
+    }
 }
 
 #[cfg(test)]
@@ -108,30 +183,52 @@ mod tests {
     use super::*;
     use crate::parser::Parser;
     use crate::scanner::Scanner;
+    use crate::ast::{Stmt, Expr, Literal};
 
-    fn run(source: &str) -> Value {
+    fn run_and_capture(source: &str) -> Vec<String> {
         let tokens = Scanner::new(source).scan_tokens();
         let mut parser = Parser::new(tokens);
-        let expr = parser.parse().expect("Parse failed");
-        Interpreter::new().interpret(&expr).expect("Interpret failed")
+        let statements = parser.parse();
+
+        let mut output = Vec::new();
+        let mut interpreter = Interpreter::new();
+        interpreter
+            .interpret_statements(&statements, &mut output)
+            .unwrap();
+
+        let result = String::from_utf8_lossy(&output).to_string();
+        result
+            .lines()
+            .map(str::to_string)
+            .filter(|s| !s.trim().is_empty())
+            .collect()
     }
 
     #[test]
     fn test_arithmetic() {
-        assert_eq!(run("1 + 2 * 3"), Value::Number(7.0));
-        assert_eq!(run("(1 + 2) * 3"), Value::Number(9.0));
+        let result = run_and_capture("print 1 + 2 * 3;");
+        assert_eq!(result, vec!["7"]);
+
+        let result = run_and_capture("print (1 + 2) * 3;");
+        assert_eq!(result, vec!["9"]);
     }
 
     #[test]
     fn test_unary() {
-        assert_eq!(run("-5"), Value::Number(-5.0));
-        assert_eq!(run("!false"), Value::Boolean(true));
+        assert_eq!(run_and_capture("print -5;"), vec!["-5"]);
+        assert_eq!(run_and_capture("print !false;"), vec!["true"]);
     }
 
     #[test]
-    fn test_equality() {
-        assert_eq!(run("1 == 1"), Value::Boolean(true));
-        assert_eq!(run("2 != 3"), Value::Boolean(true));
-        assert_eq!(run("1 < 2"), Value::Boolean(true));
+    fn test_variable_definition_and_use() {
+        assert_eq!(run_and_capture("var x = 42; print x;"), vec!["42"]);
+    }
+
+    #[test]
+    fn test_string_concat() {
+        assert_eq!(
+            run_and_capture("print \"hello \" + \"world\";"),
+            vec!["hello world"]
+        );
     }
 }

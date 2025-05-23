@@ -13,6 +13,7 @@ pub enum Expr {
         operator: Token,
         right: Box<Expr>,
     },
+    Variable(Token),
 }
 
 #[derive(Debug, Clone)]
@@ -21,4 +22,14 @@ pub enum Literal {
     String(String),
     Boolean(bool),
     Nil,
+}
+
+#[derive(Debug, Clone)]
+pub enum Stmt {
+    Expression(Expr),
+    Print(Expr),
+    Var {
+        name: Token,
+        initializer: Option<Expr>,
+    },
 }

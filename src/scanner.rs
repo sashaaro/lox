@@ -90,6 +90,8 @@ impl<'a> Scanner<'a> {
             }
             '/' => self.add_token(TokenType::Slash),
             '0'..='9' => self.number(),
+            'a'..='z' | 'A'..='Z' | '_' => self.identifier(),
+            '"' => self.string(),
             ' ' | '\r' | '\t' => {} // игнорируем whitespace
             '\n' => self.line += 1,
             _ => {
@@ -167,7 +169,61 @@ impl<'a> Scanner<'a> {
             line: self.line,
         });
     }
+
+    fn string(&mut self) {
+        while self.peek() != '"' && !self.is_at_end() {
+            if self.peek() == '\n' {
+                self.line += 1;
+            }
+            self.advance();
+        }
+
+        if self.is_at_end() {
+            println!("Unterminated string on line {}", self.line);
+            return;
+        }
+
+        // Закрывающая кавычка
+        self.advance();
+
+        // Убираем кавычки по краям
+        let value = &self.source[self.start + 1..self.current - 1];
+        self.add_token_with_literal(TokenType::String, Some(Literal::String(value.to_string())));
+    }
+    
+    fn identifier(&mut self) {
+        while self.peek().is_ascii_alphanumeric() || self.peek() == '_' {
+            self.advance();
+        }
+
+        let text = &self.source[self.start..self.current];
+        let kind = identifier_type(text);
+        self.add_token(kind);
+    }
 }
+
+fn identifier_type(text: &str) -> TokenType {
+    match text {
+        "and" => TokenType::And,
+        "class" => TokenType::Class,
+        "else" => TokenType::Else,
+        "false" => TokenType::False,
+        "for" => TokenType::For,
+        "fun" => TokenType::Fun,
+        "if" => TokenType::If,
+        "nil" => TokenType::Nil,
+        "or" => TokenType::Or,
+        "print" => TokenType::Print,
+        "return" => TokenType::Return,
+        "super" => TokenType::Super,
+        "this" => TokenType::This,
+        "true" => TokenType::True,
+        "var" => TokenType::Var,
+        "while" => TokenType::While,
+        _ => TokenType::Identifier,
+    }
+}
+
 
 
 #[cfg(test)]
@@ -243,5 +299,41 @@ mod tests {
             Some(Literal::Number(n)) => assert_eq!(*n, 3.14),
             _ => panic!("Expected number literal"),
         }
+    }
+
+    #[test]
+    fn test_string_literal() {
+        let tokens = Scanner::new("\"hello world\"").scan_tokens();
+
+        assert_eq!(tokens[0].kind, String);
+        match &tokens[0].literal {
+            Some(Literal::String(s)) => assert_eq!(s, "hello world"),
+            _ => panic!("Expected string literal"),
+        }
+
+        assert_eq!(tokens[1].kind, Eof);
+    }
+
+    #[test]
+    fn test_unterminated_string() {
+        let tokens = Scanner::new("\"hello").scan_tokens();
+
+        // Не должен паниковать. Просто будет только Eof, без строки.
+        assert_eq!(tokens.last().unwrap().kind, Eof);
+    }
+
+    #[test]
+    fn test_identifier_and_keywords() {
+        let result = Scanner::new("var foo = true;").scan_tokens();
+
+        use TokenType::*;
+        let kinds: Vec<_> = result.iter().map(|t| &t.kind).collect();
+
+        assert_eq!(
+            kinds,
+            vec![&Var, &Identifier, &Equal, &True, &Semicolon, &Eof]
+        );
+
+        assert_eq!(result[1].lexeme, "foo");
     }
 }

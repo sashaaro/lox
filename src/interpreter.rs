@@ -11,6 +11,53 @@ pub enum Value {
     String(String),
     Boolean(bool),
     Nil,
+    Function(Rc<LoxFunction>),
+}
+
+#[derive(Debug)]
+pub enum ReturnValue {
+    Return(Value),
+    Runtime(String),
+}
+
+
+#[derive(Debug)]
+pub struct LoxFunction {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: Vec<Stmt>,
+    pub closure: Rc<RefCell<Environment>>,
+}
+
+impl PartialEq for LoxFunction {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
+
+    fn ne(&self, other: &Self) -> bool {
+        todo!()
+    }
+}
+
+impl LoxFunction {
+    pub fn call(&self, interpreter: &mut Interpreter, args: Vec<Value>) -> Result<Value, String> {
+        let mut new_env = Environment::with_enclosing(self.closure.clone());
+
+        for (param, arg) in self.params.iter().zip(args.into_iter()) {
+            new_env.borrow_mut().define(param.clone(), arg);
+        }
+
+        let result = interpreter.execute_block_with_return(&self.body, new_env);
+        match result {
+            Ok(()) => {
+                Ok(Value::Nil)
+            }
+            Err(ReturnValue::Return(val)) => {
+                Ok(val)
+            }
+            Err(ReturnValue::Runtime(e)) => Err(e),
+        }
+    }
 }
 
 pub struct Interpreter {
@@ -89,6 +136,18 @@ impl Interpreter {
                     .assign(&name.lexeme, val.clone())
                     .ok_or_else(|| format!("Undefined variable '{}'", name.lexeme))?;
                 Ok(val)
+            },
+            Expr::Call { callee, arguments, .. } => {
+                let callee_val = self.evaluate(callee)?;
+                let mut args = Vec::new();
+                for arg in arguments {
+                    args.push(self.evaluate(arg)?);
+                }
+
+                match callee_val {
+                    Value::Function(f) => f.call(self, args),
+                    _ => Err("Can only call functions.".into()),
+                }
             }
         }
     }
@@ -194,6 +253,24 @@ impl Interpreter {
                 }
                 Ok(())
             }
+            Stmt::Function { name, params, body } => {
+                let func = LoxFunction {
+                    name: name.lexeme.clone(),
+                    params: params.iter().map(|t| t.lexeme.clone()).collect(),
+                    body: body.clone(),
+                    closure: self.env.clone(),
+                };
+
+                self.env
+                    .borrow_mut()
+                    .define(name.lexeme.clone(), Value::Function(Rc::new(func)));
+
+                Ok(())
+            }
+            other => {
+                eprintln!("⛔ Unexpected statement in execute(): {:?}", other);
+                Ok(())
+            }
         }
     }
 
@@ -209,6 +286,7 @@ impl Interpreter {
                 }
             }
             Value::String(s) => s.clone(),
+            Value::Function(func) => format!("<fn {}>", func.name),
         }
     }
 
@@ -229,12 +307,90 @@ impl Interpreter {
         self.env = previous;
         result
     }
+
+    pub fn execute_block_with_return(
+        &mut self,
+        statements: &[Stmt],
+        env: Rc<RefCell<Environment>>,
+    ) -> Result<(), ReturnValue> {
+        let previous = self.env.clone();
+        self.env = env;
+        let result = (|| {
+            for stmt in statements {
+                match self.execute_with_return(stmt) {
+                    Ok(()) => {}
+                    Err(ret) => return Err(ret),
+                }
+            }
+            Ok(())
+        })();
+        self.env = previous;
+        result
+    }
+
+    fn execute_with_return(&mut self, stmt: &Stmt) -> Result<(), ReturnValue> {
+        match stmt {
+            Stmt::Return(expr_opt) => {
+                let value = if let Some(expr) = expr_opt {
+                    let v = self.evaluate(expr).map_err(ReturnValue::Runtime)?;
+                    v
+                } else {
+                    Value::Nil
+                };
+                Err(ReturnValue::Return(value))
+            }
+
+            // важный момент: рекурсивно поддерживаем блоки, if, while, выражения и print
+            Stmt::Block(statements) => {
+                let new_env = Environment::with_enclosing(self.env.clone());
+                self.execute_block_with_return(statements, new_env)
+            }
+
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let cond_value = self.evaluate(condition).map_err(ReturnValue::Runtime)?;
+
+                if self.is_truthy(&cond_value) {
+                    self.execute_with_return(then_branch)
+                } else if let Some(else_branch) = else_branch {
+                    self.execute_with_return(else_branch)
+                } else {
+                    Ok(())
+                }
+            }
+
+            Stmt::While { condition, body } => {
+                let cond_value = self.evaluate(condition).map_err(ReturnValue::Runtime)?;
+
+                while self.is_truthy(&cond_value) {
+                    self.execute_with_return(body)?;
+                }
+                Ok(())
+            }
+
+            // другие делегируем
+            other => {
+                self.execute(other, &mut Vec::new()).map_err(ReturnValue::Runtime)
+            }
+        }
+    }
+
 }
 
 #[derive(Default, Clone)]
 pub struct Environment {
     values: HashMap<String, Value>,
     enclosing: Option<Rc<RefCell<Environment>>>,
+}
+
+// временно для Debug
+impl std::fmt::Debug for Environment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Environment(...)")
+    }
 }
 
 impl Environment {
@@ -348,5 +504,82 @@ mod tests {
          }",
         );
         assert_eq!(output, vec!["0", "1", "2"]);
+    }
+
+    #[test]
+    fn test_function_definition_and_call() {
+        let output = run_and_capture(
+            "
+        fun add(a, b) {
+            return a + b;
+        }
+
+        print add(2, 3);
+        ",
+        );
+        assert_eq!(output, vec!["5"]);
+    }
+
+    #[test]
+    fn test_function_empty_return() {
+        let output = run_and_capture(
+            "
+        fun noop() {
+            return;
+        }
+
+        print noop();
+        ",
+        );
+        assert_eq!(output, vec!["nil"]);
+    }
+
+    #[test]
+    fn test_early_return() {
+        let output = run_and_capture(
+            "
+        fun test() {
+            return 42;
+            print \"unreachable\";
+        }
+
+        print test();
+        ",
+        );
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_return_inside_if() {
+        let output = run_and_capture(
+            "
+        fun check(flag) {
+            if (flag) return 1;
+            return 0;
+        }
+
+        print check(true);
+        print check(false);
+        ",
+        );
+        assert_eq!(output, vec!["1", "0"]);
+    }
+
+    #[test]
+    fn test_nested_function_calls() {
+        let output = run_and_capture(
+            "
+        fun square(x) {
+            return x * x;
+        }
+
+        fun double(x) {
+            return x + x;
+        }
+
+        print square(double(3)); // (3 + 3) * (3 + 3) = 36
+        ",
+        );
+        assert_eq!(output, vec!["36"]);
     }
 }

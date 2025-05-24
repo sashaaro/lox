@@ -31,6 +31,12 @@ impl Parser {
                     name,
                     value: Box::new(value),
                 });
+            } else if let Expr::Index { object, index } = expr {
+                return Some(Expr::SetIndex {
+                    object,
+                    index,
+                    value: Box::new(value),
+                });
             }
 
             // невалидное lvalue

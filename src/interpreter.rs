@@ -14,7 +14,7 @@ pub enum Value {
     Nil,
     Function(Rc<LoxFunction>),
     NativeFunction(Rc<dyn LoxCallable>),
-    Array(Vec<Value>),
+    Array(Rc<RefCell<Vec<Value>>>),
 }
 
 impl PartialEq for Value {
@@ -212,26 +212,50 @@ impl Interpreter {
                 }
             }
             Expr::Array(items) => {
-                let mut values = Vec::new();
-                for item in items {
-                    values.push(self.evaluate(item)?);
-                }
-                Ok(Value::Array(values))
+                let values = items
+                    .iter()
+                    .map(|e| self.evaluate(e))
+                    .collect::<Result<_, _>>()?;
+                Ok(Value::Array(Rc::new(RefCell::new(values))))
             }
             Expr::Index { object, index } => {
                 let object_val = self.evaluate(object)?;
                 let index_val = self.evaluate(index)?;
 
-                match (object_val, index_val) {
+                match (&object_val, &index_val) {
                     (Value::Array(arr), Value::Number(n)) => {
-                        let i = n as usize;
-                        if i < arr.len() {
-                            Ok(arr[i].clone())
+                        let idx = *n as usize;
+                        let arr_ref = arr.borrow();
+                        if idx < arr_ref.len() {
+                            Ok(arr_ref[idx].clone())
                         } else {
                             Err("Index out of bounds".into())
                         }
                     }
                     _ => Err("Only arrays can be indexed with numbers".into()),
+                }
+            }
+            Expr::SetIndex {
+                object,
+                index,
+                value,
+            } => {
+                let object_val = self.evaluate(object)?;
+                let index_val = self.evaluate(index)?;
+                let value_val = self.evaluate(value)?;
+
+                match (object_val, index_val) {
+                    (Value::Array(arr), Value::Number(n)) => {
+                        let idx = n as usize;
+                        let mut arr_ref = arr.borrow_mut();
+                        if idx < arr_ref.len() {
+                            arr_ref[idx] = value_val.clone();
+                            Ok(value_val)
+                        } else {
+                            Err("Index out of bounds".into())
+                        }
+                    }
+                    _ => Err("Can only assign into array[index]".into()),
                 }
             }
         }
@@ -376,6 +400,7 @@ impl Interpreter {
             Value::NativeFunction(native) => format!("<native fn {}>", native.name()),
             Value::Array(items) => {
                 let s = items
+                    .borrow()
                     .iter()
                     .map(|v| self.stringify(v))
                     .collect::<Vec<_>>()
@@ -727,5 +752,17 @@ mod tests {
         ",
         );
         assert_eq!(output, vec!["1", "3"]);
+    }
+
+    #[test]
+    fn test_array_index_assignment() {
+        let result = run_and_capture(
+            "
+        var a = [10, 20, 30];
+        a[1] = 42;
+        print a[1];
+        ",
+        );
+        assert_eq!(result, vec!["42"]);
     }
 }

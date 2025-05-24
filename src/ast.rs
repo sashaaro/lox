@@ -28,6 +28,11 @@ pub enum Expr {
         object: Box<Expr>,
         index: Box<Expr>,
     },
+    SetIndex {
+        object: Box<Expr>,
+        index: Box<Expr>,
+        value: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]

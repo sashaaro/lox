@@ -11,6 +11,49 @@ pub enum Value {
     String(String),
     Boolean(bool),
     Nil,
+    Function(Rc<LoxFunction>),
+}
+
+#[derive(Debug)]
+pub enum ReturnValue {
+    Return(Value),
+    Runtime(String),
+}
+
+#[derive(Debug)]
+pub struct LoxFunction {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: Vec<Stmt>,
+    pub closure: Rc<RefCell<Environment>>,
+}
+
+impl PartialEq for LoxFunction {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
+
+    fn ne(&self, other: &Self) -> bool {
+        todo!()
+    }
+}
+
+impl LoxFunction {
+    pub fn call(&self, interpreter: &mut Interpreter, args: Vec<Value>) -> Result<Value, String> {
+        let mut new_env = Environment::with_enclosing(self.closure.clone());
+
+        for (param, arg) in self.params.iter().zip(args.into_iter()) {
+            new_env.borrow_mut().define(param.clone(), arg);
+        }
+
+        let result = interpreter.execute_block_with_return(&self.body, new_env);
+
+        match result {
+            Ok(()) => Ok(Value::Nil),
+            Err(ReturnValue::Return(val)) => Ok(val),
+            Err(ReturnValue::Runtime(e)) => Err(e),
+        }
+    }
 }
 
 pub struct Interpreter {
@@ -57,6 +100,29 @@ impl Interpreter {
                 left,
                 operator,
                 right,
+            } if matches!(operator.kind, TokenType::Or | TokenType::And) => {
+                let left_val = self.evaluate(left)?;
+
+                match operator.kind {
+                    TokenType::Or => {
+                        if self.is_truthy(&left_val) {
+                            return Ok(left_val);
+                        }
+                    }
+                    TokenType::And => {
+                        if !self.is_truthy(&left_val) {
+                            return Ok(left_val);
+                        }
+                    }
+                    _ => {}
+                }
+
+                self.evaluate(right)
+            }
+            Expr::Binary {
+                left,
+                operator,
+                right,
             } => {
                 let left = self.evaluate(left)?;
                 let right = self.evaluate(right)?;
@@ -89,6 +155,20 @@ impl Interpreter {
                     .assign(&name.lexeme, val.clone())
                     .ok_or_else(|| format!("Undefined variable '{}'", name.lexeme))?;
                 Ok(val)
+            }
+            Expr::Call {
+                callee, arguments, ..
+            } => {
+                let callee_val = self.evaluate(callee)?;
+                let mut args = Vec::new();
+                for arg in arguments {
+                    args.push(self.evaluate(arg)?);
+                }
+
+                match callee_val {
+                    Value::Function(f) => f.call(self, args),
+                    _ => Err("Can only call functions.".into()),
+                }
             }
         }
     }
@@ -143,24 +223,23 @@ impl Interpreter {
         Ok(())
     }
 
-    fn execute<W: Write>(&mut self, stmt: &Stmt, output: &mut W) -> Result<(), String> {
+    fn execute_stmt(&mut self, stmt: &Stmt, output: &mut impl Write) -> Result<(), String> {
         match stmt {
             Stmt::Print(expr) => {
-                let value = self.evaluate(expr)?;
-                writeln!(output, "{}", self.stringify(&value)).map_err(|e| e.to_string())?;
-                Ok(())
+                let val = self.evaluate(expr)?;
+                writeln!(output, "{}", self.stringify(&val)).map_err(|e| e.to_string())
             }
             Stmt::Expression(expr) => {
                 self.evaluate(expr)?;
                 Ok(())
             }
             Stmt::Var { name, initializer } => {
-                let value = if let Some(expr) = initializer {
+                let val = if let Some(expr) = initializer {
                     self.evaluate(expr)?
                 } else {
                     Value::Nil
                 };
-                self.env.borrow_mut().define(name.lexeme.clone(), value);
+                self.env.borrow_mut().define(name.lexeme.clone(), val);
                 Ok(())
             }
             Stmt::Block(statements) => {
@@ -172,29 +251,49 @@ impl Interpreter {
                 then_branch,
                 else_branch,
             } => {
-                let v = &self.evaluate(condition)?;
-                if self.is_truthy(v) {
-                    self.execute(then_branch, output)
-                } else if let Some(else_stmt) = else_branch {
-                    self.execute(else_stmt, output)
+                let cond_val = self.evaluate(condition)?;
+                if self.is_truthy(&cond_val) {
+                    self.execute_stmt(then_branch, output)
+                } else if let Some(else_branch) = else_branch {
+                    self.execute_stmt(else_branch, output)
                 } else {
                     Ok(())
                 }
             }
             Stmt::While { condition, body } => {
-                loop {
-                    let cond = self.evaluate(condition)?;
-
-                    let v = self.is_truthy(&cond);
-                    if !v {
-                        break;
-                    }
-
-                    self.execute(body, output)?;
+                while {
+                    let v = &self.evaluate(condition)?;
+                    self.is_truthy(v)
+                } {
+                    self.execute_stmt(body, output)?;
                 }
                 Ok(())
             }
+            Stmt::Function { name, params, body } => {
+                let func = LoxFunction {
+                    name: name.lexeme.clone(),
+                    params: params.iter().map(|t| t.lexeme.clone()).collect(),
+                    body: body.clone(),
+                    closure: self.env.clone(),
+                };
+                self.env
+                    .borrow_mut()
+                    .define(name.lexeme.clone(), Value::Function(Rc::new(func)));
+                Ok(())
+            }
+            Stmt::Return(_) => {
+                // только для execute_with_return
+                Err("Unexpected return statement outside of function.".into())
+            }
         }
+    }
+
+    fn execute<W: Write>(&mut self, stmt: &Stmt, output: &mut W) -> Result<(), String> {
+        self.execute_stmt_internal(stmt, output, false)
+            .map_err(|e| match e {
+                ReturnValue::Runtime(e) => e,
+                ReturnValue::Return(_) => "Return outside of function.".into(),
+            })
     }
 
     fn stringify(&self, val: &Value) -> String {
@@ -209,6 +308,7 @@ impl Interpreter {
                 }
             }
             Value::String(s) => s.clone(),
+            Value::Function(func) => format!("<fn {}>", func.name),
         }
     }
 
@@ -229,12 +329,106 @@ impl Interpreter {
         self.env = previous;
         result
     }
+
+    pub fn execute_block_with_return(
+        &mut self,
+        statements: &[Stmt],
+        env: Rc<RefCell<Environment>>,
+    ) -> Result<(), ReturnValue> {
+        let previous = self.env.clone();
+        self.env = env;
+        let result = (|| {
+            for stmt in statements {
+                match self.execute_with_return(stmt) {
+                    Ok(()) => {}
+                    Err(ret) => return Err(ret),
+                }
+            }
+            Ok(())
+        })();
+        self.env = previous;
+        result
+    }
+
+    fn execute_with_return(&mut self, stmt: &Stmt) -> Result<(), ReturnValue> {
+        self.execute_stmt_internal(stmt, &mut Vec::new(), true)
+    }
+
+    fn execute_stmt_internal(
+        &mut self,
+        stmt: &Stmt,
+        output: &mut impl Write,
+        allow_return: bool,
+    ) -> Result<(), ReturnValue> {
+        match stmt {
+            Stmt::Return(expr_opt) => {
+                if !allow_return {
+                    return Err(ReturnValue::Runtime(
+                        "Can't return from top-level code.".into(),
+                    ));
+                }
+                let value = if let Some(expr) = expr_opt {
+                    self.evaluate(expr).map_err(ReturnValue::Runtime)?
+                } else {
+                    Value::Nil
+                };
+                Err(ReturnValue::Return(value))
+            }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let cond = self.evaluate(condition).map_err(ReturnValue::Runtime)?;
+                if self.is_truthy(&cond) {
+                    self.execute_stmt_internal(then_branch, output, allow_return)
+                } else if let Some(else_stmt) = else_branch {
+                    self.execute_stmt_internal(else_stmt, output, allow_return)
+                } else {
+                    Ok(())
+                }
+            }
+            Stmt::While { condition, body } => {
+                while {
+                    let v = &self.evaluate(condition).map_err(ReturnValue::Runtime)?;
+                    self.is_truthy(v)
+                } {
+                    self.execute_stmt_internal(body, output, allow_return)?;
+                }
+                Ok(())
+            }
+            Stmt::Block(statements) => {
+                let new_env = Environment::with_enclosing(self.env.clone());
+                let previous = self.env.clone();
+                self.env = new_env;
+                let result = (|| {
+                    for stmt in statements {
+                        self.execute_stmt_internal(stmt, output, allow_return)?;
+                    }
+                    Ok(())
+                })();
+                self.env = previous;
+                result
+            }
+            // обычные без return
+            _ => self
+                .execute_stmt(stmt, output)
+                .map_err(ReturnValue::Runtime),
+        }
+    }
 }
 
 #[derive(Default, Clone)]
 pub struct Environment {
     values: HashMap<String, Value>,
     enclosing: Option<Rc<RefCell<Environment>>>,
+}
+
+// временно для Debug
+impl std::fmt::Debug for Environment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Environment(...)")
+    }
 }
 
 impl Environment {
@@ -348,5 +542,97 @@ mod tests {
          }",
         );
         assert_eq!(output, vec!["0", "1", "2"]);
+    }
+
+    #[test]
+    fn test_function_definition_and_call() {
+        let output = run_and_capture(
+            "
+        fun add(a, b) {
+            return a + b;
+        }
+
+        print add(2, 3);
+        ",
+        );
+        assert_eq!(output, vec!["5"]);
+    }
+
+    #[test]
+    fn test_function_empty_return() {
+        let output = run_and_capture(
+            "
+        fun noop() {
+            return;
+        }
+
+        print noop();
+        ",
+        );
+        assert_eq!(output, vec!["nil"]);
+    }
+
+    #[test]
+    fn test_early_return() {
+        let output = run_and_capture(
+            "
+        fun test() {
+            return 42;
+            print \"unreachable\";
+        }
+
+        print test();
+        ",
+        );
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_return_inside_if() {
+        let output = run_and_capture(
+            "
+        fun check(flag) {
+            if (flag) return 1;
+            return 0;
+        }
+
+        print check(true);
+        print check(false);
+        ",
+        );
+        assert_eq!(output, vec!["1", "0"]);
+    }
+
+    #[test]
+    fn test_nested_function_calls() {
+        let output = run_and_capture(
+            "
+        fun square(x) {
+            return x * x;
+        }
+
+        fun double(x) {
+            return x + x;
+        }
+
+        print square(double(3)); // (3 + 3) * (3 + 3) = 36
+        ",
+        );
+        assert_eq!(output, vec!["36"]);
+    }
+
+    #[test]
+    fn test_logical_and_or() {
+        let result = run_and_capture("print true or false;");
+        assert_eq!(result, vec!["true"]);
+
+        let result = run_and_capture("print false or true;");
+        assert_eq!(result, vec!["true"]);
+
+        let result = run_and_capture("print false and true;");
+        assert_eq!(result, vec!["false"]);
+
+        let result = run_and_capture("print true and false;");
+        assert_eq!(result, vec!["false"]);
     }
 }

@@ -20,7 +20,7 @@ impl Parser {
     }
 
     fn assignment(&mut self) -> Option<Expr> {
-        let expr = self.equality()?; // ← раньше тут была expression
+        let expr = self.or()?;
 
         if self.match_types(&[TokenType::Equal]) {
             let equals = self.previous().clone();
@@ -43,6 +43,38 @@ impl Parser {
 
     fn expression(&mut self) -> Option<Expr> {
         self.assignment()
+    }
+
+    fn or(&mut self) -> Option<Expr> {
+        let mut expr = self.and()?;
+
+        while self.match_types(&[TokenType::Or]) {
+            let operator = self.previous().clone();
+            let right = self.and()?;
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                operator,
+                right: Box::new(right),
+            };
+        }
+
+        Some(expr)
+    }
+
+    fn and(&mut self) -> Option<Expr> {
+        let mut expr = self.equality()?;
+
+        while self.match_types(&[TokenType::And]) {
+            let operator = self.previous().clone();
+            let right = self.equality()?;
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                operator,
+                right: Box::new(right),
+            };
+        }
+
+        Some(expr)
     }
 
     fn equality(&mut self) -> Option<Expr> {
@@ -124,7 +156,7 @@ impl Parser {
             });
         }
 
-        self.primary()
+        self.call()
     }
 
     fn primary(&mut self) -> Option<Expr> {
@@ -212,25 +244,40 @@ impl Parser {
     }
 
     fn declaration(&mut self) -> Option<Stmt> {
-        if self.match_types(&[TokenType::Var]) {
-            self.var_declaration()
-        } else {
-            self.statement()
+        if self.match_types(&[TokenType::Fun]) {
+            return self.function("function");
         }
+        if self.match_types(&[TokenType::Var]) {
+            return self.var_declaration();
+        }
+        self.statement()
     }
 
     fn statement(&mut self) -> Option<Stmt> {
         if self.match_types(&[TokenType::Print]) {
             self.print_statement()
-        } else if self.match_types(&[TokenType::LeftBrace]) {
-            Some(Stmt::Block(self.block()?))
+        } else if self.match_types(&[TokenType::Return]) {
+            self.return_statement()
         } else if self.match_types(&[TokenType::If]) {
             self.if_statement()
         } else if self.match_types(&[TokenType::While]) {
             self.while_statement()
+        } else if self.match_types(&[TokenType::LeftBrace]) {
+            Some(Stmt::Block(self.block()?))
         } else {
             self.expression_statement()
         }
+    }
+
+    fn return_statement(&mut self) -> Option<Stmt> {
+        let keyword = self.previous(); // только если ты хочешь трекать место return
+        let value = if !self.check(&TokenType::Semicolon) {
+            Some(self.expression()?)
+        } else {
+            None
+        };
+        self.consume(TokenType::Semicolon)?;
+        Some(Stmt::Return(value))
     }
 
     fn print_statement(&mut self) -> Option<Stmt> {
@@ -296,6 +343,62 @@ impl Parser {
         self.consume(TokenType::RightParen)?;
         let body = Box::new(self.statement()?);
         Some(Stmt::While { condition, body })
+    }
+
+    fn function(&mut self, _kind: &str) -> Option<Stmt> {
+        let name = self.consume(TokenType::Identifier)?;
+        self.consume(TokenType::LeftParen)?;
+        let mut params = vec![];
+
+        if !self.check(&TokenType::RightParen) {
+            loop {
+                if params.len() >= 255 {
+                    eprintln!("Can't have more than 255 parameters.");
+                    return None;
+                }
+                params.push(self.consume(TokenType::Identifier)?);
+                if !self.match_types(&[TokenType::Comma]) {
+                    break;
+                }
+            }
+        }
+
+        self.consume(TokenType::RightParen)?;
+        self.consume(TokenType::LeftBrace)?;
+        let body = self.block()?;
+        Some(Stmt::Function { name, params, body })
+    }
+
+    fn finish_call(&mut self, callee: Expr) -> Option<Expr> {
+        let mut arguments = vec![];
+
+        if !self.check(&TokenType::RightParen) {
+            loop {
+                if arguments.len() >= 255 {
+                    eprintln!("Can't have more than 255 arguments.");
+                    return None;
+                }
+                arguments.push(self.expression()?);
+                if !self.match_types(&[TokenType::Comma]) {
+                    break;
+                }
+            }
+        }
+
+        let paren = self.consume(TokenType::RightParen)?;
+        Some(Expr::Call {
+            callee: Box::new(callee),
+            paren,
+            arguments,
+        })
+    }
+
+    fn call(&mut self) -> Option<Expr> {
+        let mut expr = self.primary()?;
+        while self.match_types(&[TokenType::LeftParen]) {
+            expr = self.finish_call(expr)?;
+        }
+        Some(expr)
     }
 }
 

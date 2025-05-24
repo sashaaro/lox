@@ -23,6 +23,16 @@ pub enum Expr {
         paren: Token,
         arguments: Vec<Expr>,
     },
+    Array(Vec<Expr>),
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+    },
+    SetIndex {
+        object: Box<Expr>,
+        index: Box<Expr>,
+        value: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -1,10 +1,10 @@
 use crate::ast::{Expr, Literal, Stmt};
+use crate::core::ClockNative;
 use crate::token::TokenType;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
-use crate::core::ClockNative;
 
 #[derive(Clone)]
 pub enum Value {
@@ -14,6 +14,7 @@ pub enum Value {
     Nil,
     Function(Rc<LoxFunction>),
     NativeFunction(Rc<dyn LoxCallable>),
+    Array(Rc<RefCell<Vec<Value>>>),
 }
 
 impl PartialEq for Value {
@@ -39,6 +40,7 @@ impl std::fmt::Debug for Value {
             Value::Nil => write!(f, "Nil"),
             Value::Function(func) => write!(f, "<fn {}>", func.name),
             Value::NativeFunction(native) => write!(f, "<native fn {}>", native.name()),
+            Value::Array(arr) => write!(f, "Array({:?})", arr),
         }
     }
 }
@@ -99,10 +101,8 @@ impl Interpreter {
     pub fn new() -> Self {
         let env = Rc::new(RefCell::new(Environment::default()));
 
-        env.borrow_mut().define(
-            "clock".into(),
-            Value::NativeFunction(Rc::new(ClockNative)),
-        );
+        env.borrow_mut()
+            .define("clock".into(), Value::NativeFunction(Rc::new(ClockNative)));
 
         Interpreter { env }
     }
@@ -196,7 +196,9 @@ impl Interpreter {
                     .ok_or_else(|| format!("Undefined variable '{}'", name.lexeme))?;
                 Ok(val)
             }
-            Expr::Call { callee, arguments, .. } => {
+            Expr::Call {
+                callee, arguments, ..
+            } => {
                 let callee_val = self.evaluate(callee)?;
                 let args = arguments
                     .iter()
@@ -207,6 +209,53 @@ impl Interpreter {
                     Value::Function(f) => f.call(self, args),
                     Value::NativeFunction(f) => f.call(self, args),
                     _ => Err("Can only call functions.".into()),
+                }
+            }
+            Expr::Array(items) => {
+                let values = items
+                    .iter()
+                    .map(|e| self.evaluate(e))
+                    .collect::<Result<_, _>>()?;
+                Ok(Value::Array(Rc::new(RefCell::new(values))))
+            }
+            Expr::Index { object, index } => {
+                let object_val = self.evaluate(object)?;
+                let index_val = self.evaluate(index)?;
+
+                match (&object_val, &index_val) {
+                    (Value::Array(arr), Value::Number(n)) => {
+                        let idx = *n as usize;
+                        let arr_ref = arr.borrow();
+                        if idx < arr_ref.len() {
+                            Ok(arr_ref[idx].clone())
+                        } else {
+                            Err("Index out of bounds".into())
+                        }
+                    }
+                    _ => Err("Only arrays can be indexed with numbers".into()),
+                }
+            }
+            Expr::SetIndex {
+                object,
+                index,
+                value,
+            } => {
+                let object_val = self.evaluate(object)?;
+                let index_val = self.evaluate(index)?;
+                let value_val = self.evaluate(value)?;
+
+                match (object_val, index_val) {
+                    (Value::Array(arr), Value::Number(n)) => {
+                        let idx = n as usize;
+                        let mut arr_ref = arr.borrow_mut();
+                        if idx < arr_ref.len() {
+                            arr_ref[idx] = value_val.clone();
+                            Ok(value_val)
+                        } else {
+                            Err("Index out of bounds".into())
+                        }
+                    }
+                    _ => Err("Can only assign into array[index]".into()),
                 }
             }
         }
@@ -349,6 +398,15 @@ impl Interpreter {
             Value::String(s) => s.clone(),
             Value::Function(func) => format!("<fn {}>", func.name),
             Value::NativeFunction(native) => format!("<native fn {}>", native.name()),
+            Value::Array(items) => {
+                let s = items
+                    .borrow()
+                    .iter()
+                    .map(|v| self.stringify(v))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("[{}]", s)
+            }
         }
     }
 
@@ -682,5 +740,29 @@ mod tests {
         assert_eq!(result.len(), 1);
         let n = result[0].parse::<f64>().unwrap();
         assert!(n > 0.0);
+    }
+
+    #[test]
+    fn test_array_literal_and_indexing() {
+        let output = run_and_capture(
+            "
+        var a = [1, 2, 3];
+        print a[0];
+        print a[2];
+        ",
+        );
+        assert_eq!(output, vec!["1", "3"]);
+    }
+
+    #[test]
+    fn test_array_index_assignment() {
+        let result = run_and_capture(
+            "
+        var a = [10, 20, 30];
+        a[1] = 42;
+        print a[1];
+        ",
+        );
+        assert_eq!(result, vec!["42"]);
     }
 }

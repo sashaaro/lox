@@ -31,6 +31,12 @@ impl Parser {
                     name,
                     value: Box::new(value),
                 });
+            } else if let Expr::Index { object, index } = expr {
+                return Some(Expr::SetIndex {
+                    object,
+                    index,
+                    value: Box::new(value),
+                });
             }
 
             // невалидное lvalue
@@ -156,11 +162,43 @@ impl Parser {
             });
         }
 
-        self.call()
+        self.index()
+    }
+
+    fn index(&mut self) -> Option<Expr> {
+        let mut expr = self.call()?; // сначала распарсить callee или array literal
+
+        while self.match_types(&[TokenType::LeftBracket]) {
+            let index_expr = self.expression()?;
+            self.consume(TokenType::RightBracket)?;
+            expr = Expr::Index {
+                object: Box::new(expr),
+                index: Box::new(index_expr),
+            };
+        }
+
+        Some(expr)
     }
 
     fn primary(&mut self) -> Option<Expr> {
+        if self.match_types(&[TokenType::LeftBracket]) {
+            let mut elements = vec![];
+
+            if !self.check(&TokenType::RightBracket) {
+                loop {
+                    elements.push(self.expression()?);
+                    if !self.match_types(&[TokenType::Comma]) {
+                        break;
+                    }
+                }
+            }
+
+            self.consume(TokenType::RightBracket)?;
+            return Some(Expr::Array(elements));
+        }
+
         let token = self.advance();
+
         match &token.kind {
             TokenType::False => Some(Expr::Literal(Literal::Boolean(false))),
             TokenType::True => Some(Expr::Literal(Literal::Boolean(true))),

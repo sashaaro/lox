@@ -100,6 +100,29 @@ impl Interpreter {
                 left,
                 operator,
                 right,
+            } if matches!(operator.kind, TokenType::Or | TokenType::And) => {
+                let left_val = self.evaluate(left)?;
+
+                match operator.kind {
+                    TokenType::Or => {
+                        if self.is_truthy(&left_val) {
+                            return Ok(left_val);
+                        }
+                    }
+                    TokenType::And => {
+                        if !self.is_truthy(&left_val) {
+                            return Ok(left_val);
+                        }
+                    }
+                    _ => {}
+                }
+
+                self.evaluate(right)
+            }
+            Expr::Binary {
+                left,
+                operator,
+                right,
             } => {
                 let left = self.evaluate(left)?;
                 let right = self.evaluate(right)?;
@@ -596,5 +619,20 @@ mod tests {
         ",
         );
         assert_eq!(output, vec!["36"]);
+    }
+
+    #[test]
+    fn test_logical_and_or() {
+        let result = run_and_capture("print true or false;");
+        assert_eq!(result, vec!["true"]);
+
+        let result = run_and_capture("print false or true;");
+        assert_eq!(result, vec!["true"]);
+
+        let result = run_and_capture("print false and true;");
+        assert_eq!(result, vec!["false"]);
+
+        let result = run_and_capture("print true and false;");
+        assert_eq!(result, vec!["false"]);
     }
 }

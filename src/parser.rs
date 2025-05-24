@@ -20,7 +20,7 @@ impl Parser {
     }
 
     fn assignment(&mut self) -> Option<Expr> {
-        let expr = self.equality()?; // ← раньше тут была expression
+        let expr = self.or()?;
 
         if self.match_types(&[TokenType::Equal]) {
             let equals = self.previous().clone();
@@ -43,6 +43,38 @@ impl Parser {
 
     fn expression(&mut self) -> Option<Expr> {
         self.assignment()
+    }
+
+    fn or(&mut self) -> Option<Expr> {
+        let mut expr = self.and()?;
+
+        while self.match_types(&[TokenType::Or]) {
+            let operator = self.previous().clone();
+            let right = self.and()?;
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                operator,
+                right: Box::new(right),
+            };
+        }
+
+        Some(expr)
+    }
+
+    fn and(&mut self) -> Option<Expr> {
+        let mut expr = self.equality()?;
+
+        while self.match_types(&[TokenType::And]) {
+            let operator = self.previous().clone();
+            let right = self.equality()?;
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                operator,
+                right: Box::new(right),
+            };
+        }
+
+        Some(expr)
     }
 
     fn equality(&mut self) -> Option<Expr> {

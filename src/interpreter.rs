@@ -20,7 +20,6 @@ pub enum ReturnValue {
     Runtime(String),
 }
 
-
 #[derive(Debug)]
 pub struct LoxFunction {
     pub name: String,
@@ -48,13 +47,10 @@ impl LoxFunction {
         }
 
         let result = interpreter.execute_block_with_return(&self.body, new_env);
+
         match result {
-            Ok(()) => {
-                Ok(Value::Nil)
-            }
-            Err(ReturnValue::Return(val)) => {
-                Ok(val)
-            }
+            Ok(()) => Ok(Value::Nil),
+            Err(ReturnValue::Return(val)) => Ok(val),
             Err(ReturnValue::Runtime(e)) => Err(e),
         }
     }
@@ -136,8 +132,10 @@ impl Interpreter {
                     .assign(&name.lexeme, val.clone())
                     .ok_or_else(|| format!("Undefined variable '{}'", name.lexeme))?;
                 Ok(val)
-            },
-            Expr::Call { callee, arguments, .. } => {
+            }
+            Expr::Call {
+                callee, arguments, ..
+            } => {
                 let callee_val = self.evaluate(callee)?;
                 let mut args = Vec::new();
                 for arg in arguments {
@@ -202,24 +200,23 @@ impl Interpreter {
         Ok(())
     }
 
-    fn execute<W: Write>(&mut self, stmt: &Stmt, output: &mut W) -> Result<(), String> {
+    fn execute_stmt(&mut self, stmt: &Stmt, output: &mut impl Write) -> Result<(), String> {
         match stmt {
             Stmt::Print(expr) => {
-                let value = self.evaluate(expr)?;
-                writeln!(output, "{}", self.stringify(&value)).map_err(|e| e.to_string())?;
-                Ok(())
+                let val = self.evaluate(expr)?;
+                writeln!(output, "{}", self.stringify(&val)).map_err(|e| e.to_string())
             }
             Stmt::Expression(expr) => {
                 self.evaluate(expr)?;
                 Ok(())
             }
             Stmt::Var { name, initializer } => {
-                let value = if let Some(expr) = initializer {
+                let val = if let Some(expr) = initializer {
                     self.evaluate(expr)?
                 } else {
                     Value::Nil
                 };
-                self.env.borrow_mut().define(name.lexeme.clone(), value);
+                self.env.borrow_mut().define(name.lexeme.clone(), val);
                 Ok(())
             }
             Stmt::Block(statements) => {
@@ -231,25 +228,21 @@ impl Interpreter {
                 then_branch,
                 else_branch,
             } => {
-                let v = &self.evaluate(condition)?;
-                if self.is_truthy(v) {
-                    self.execute(then_branch, output)
-                } else if let Some(else_stmt) = else_branch {
-                    self.execute(else_stmt, output)
+                let cond_val = self.evaluate(condition)?;
+                if self.is_truthy(&cond_val) {
+                    self.execute_stmt(then_branch, output)
+                } else if let Some(else_branch) = else_branch {
+                    self.execute_stmt(else_branch, output)
                 } else {
                     Ok(())
                 }
             }
             Stmt::While { condition, body } => {
-                loop {
-                    let cond = self.evaluate(condition)?;
-
-                    let v = self.is_truthy(&cond);
-                    if !v {
-                        break;
-                    }
-
-                    self.execute(body, output)?;
+                while {
+                    let v = &self.evaluate(condition)?;
+                    self.is_truthy(v)
+                } {
+                    self.execute_stmt(body, output)?;
                 }
                 Ok(())
             }
@@ -260,18 +253,24 @@ impl Interpreter {
                     body: body.clone(),
                     closure: self.env.clone(),
                 };
-
                 self.env
                     .borrow_mut()
                     .define(name.lexeme.clone(), Value::Function(Rc::new(func)));
-
                 Ok(())
             }
-            other => {
-                eprintln!("⛔ Unexpected statement in execute(): {:?}", other);
-                Ok(())
+            Stmt::Return(_) => {
+                // только для execute_with_return
+                Err("Unexpected return statement outside of function.".into())
             }
         }
+    }
+
+    fn execute<W: Write>(&mut self, stmt: &Stmt, output: &mut W) -> Result<(), String> {
+        self.execute_stmt_internal(stmt, output, false)
+            .map_err(|e| match e {
+                ReturnValue::Runtime(e) => e,
+                ReturnValue::Return(_) => "Return outside of function.".into(),
+            })
     }
 
     fn stringify(&self, val: &Value) -> String {
@@ -329,55 +328,71 @@ impl Interpreter {
     }
 
     fn execute_with_return(&mut self, stmt: &Stmt) -> Result<(), ReturnValue> {
+        self.execute_stmt_internal(stmt, &mut Vec::new(), true)
+    }
+
+    fn execute_stmt_internal(
+        &mut self,
+        stmt: &Stmt,
+        output: &mut impl Write,
+        allow_return: bool,
+    ) -> Result<(), ReturnValue> {
         match stmt {
             Stmt::Return(expr_opt) => {
+                if !allow_return {
+                    return Err(ReturnValue::Runtime(
+                        "Can't return from top-level code.".into(),
+                    ));
+                }
                 let value = if let Some(expr) = expr_opt {
-                    let v = self.evaluate(expr).map_err(ReturnValue::Runtime)?;
-                    v
+                    self.evaluate(expr).map_err(ReturnValue::Runtime)?
                 } else {
                     Value::Nil
                 };
                 Err(ReturnValue::Return(value))
             }
-
-            // важный момент: рекурсивно поддерживаем блоки, if, while, выражения и print
-            Stmt::Block(statements) => {
-                let new_env = Environment::with_enclosing(self.env.clone());
-                self.execute_block_with_return(statements, new_env)
-            }
-
             Stmt::If {
                 condition,
                 then_branch,
                 else_branch,
             } => {
-                let cond_value = self.evaluate(condition).map_err(ReturnValue::Runtime)?;
-
-                if self.is_truthy(&cond_value) {
-                    self.execute_with_return(then_branch)
-                } else if let Some(else_branch) = else_branch {
-                    self.execute_with_return(else_branch)
+                let cond = self.evaluate(condition).map_err(ReturnValue::Runtime)?;
+                if self.is_truthy(&cond) {
+                    self.execute_stmt_internal(then_branch, output, allow_return)
+                } else if let Some(else_stmt) = else_branch {
+                    self.execute_stmt_internal(else_stmt, output, allow_return)
                 } else {
                     Ok(())
                 }
             }
-
             Stmt::While { condition, body } => {
-                let cond_value = self.evaluate(condition).map_err(ReturnValue::Runtime)?;
-
-                while self.is_truthy(&cond_value) {
-                    self.execute_with_return(body)?;
+                while {
+                    let v = &self.evaluate(condition).map_err(ReturnValue::Runtime)?;
+                    self.is_truthy(v)
+                } {
+                    self.execute_stmt_internal(body, output, allow_return)?;
                 }
                 Ok(())
             }
-
-            // другие делегируем
-            other => {
-                self.execute(other, &mut Vec::new()).map_err(ReturnValue::Runtime)
+            Stmt::Block(statements) => {
+                let new_env = Environment::with_enclosing(self.env.clone());
+                let previous = self.env.clone();
+                self.env = new_env;
+                let result = (|| {
+                    for stmt in statements {
+                        self.execute_stmt_internal(stmt, output, allow_return)?;
+                    }
+                    Ok(())
+                })();
+                self.env = previous;
+                result
             }
+            // обычные без return
+            _ => self
+                .execute_stmt(stmt, output)
+                .map_err(ReturnValue::Runtime),
         }
     }
-
 }
 
 #[derive(Default, Clone)]

@@ -765,4 +765,25 @@ mod tests {
         );
         assert_eq!(result, vec!["42"]);
     }
+
+    #[test]
+    fn test_closure_counter() {
+        let output = run_and_capture(
+            "
+        fun makeCounter() {
+            var count = 0;
+            fun inc() {
+                count = count + 1;
+                return count;
+            }
+            return inc;
+        }
+
+        var c = makeCounter();
+        print c(); // 1
+        print c(); // 2
+        ",
+        );
+        assert_eq!(output, vec!["1", "2"]);
+    }
 }

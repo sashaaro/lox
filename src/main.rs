@@ -3,6 +3,7 @@ mod interpreter;
 mod parser;
 mod scanner;
 mod token;
+mod core;
 
 use interpreter::Interpreter;
 use parser::Parser;

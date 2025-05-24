@@ -4,20 +4,55 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
+use crate::core::ClockNative;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub enum Value {
     Number(f64),
     String(String),
     Boolean(bool),
     Nil,
     Function(Rc<LoxFunction>),
+    NativeFunction(Rc<dyn LoxCallable>),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        use Value::*;
+        match (self, other) {
+            (Nil, Nil) => true,
+            (Boolean(a), Boolean(b)) => a == b,
+            (Number(a), Number(b)) => a == b,
+            (String(a), String(b)) => a == b,
+            // нельзя сравнивать функции
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Number(n) => write!(f, "Number({})", n),
+            Value::String(s) => write!(f, "String({:?})", s),
+            Value::Boolean(b) => write!(f, "Boolean({})", b),
+            Value::Nil => write!(f, "Nil"),
+            Value::Function(func) => write!(f, "<fn {}>", func.name),
+            Value::NativeFunction(native) => write!(f, "<native fn {}>", native.name()),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub enum ReturnValue {
     Return(Value),
     Runtime(String),
+}
+
+pub trait LoxCallable {
+    fn arity(&self) -> usize;
+    fn call(&self, interpreter: &mut Interpreter, args: Vec<Value>) -> Result<Value, String>;
+    fn name(&self) -> &str;
 }
 
 #[derive(Debug)]
@@ -62,9 +97,14 @@ pub struct Interpreter {
 
 impl Interpreter {
     pub fn new() -> Self {
-        Interpreter {
-            env: Rc::new(RefCell::new(Environment::default())),
-        }
+        let env = Rc::new(RefCell::new(Environment::default()));
+
+        env.borrow_mut().define(
+            "clock".into(),
+            Value::NativeFunction(Rc::new(ClockNative)),
+        );
+
+        Interpreter { env }
     }
 
     pub fn interpret(&mut self, expr: &Expr) -> Result<Value, String> {
@@ -156,17 +196,16 @@ impl Interpreter {
                     .ok_or_else(|| format!("Undefined variable '{}'", name.lexeme))?;
                 Ok(val)
             }
-            Expr::Call {
-                callee, arguments, ..
-            } => {
+            Expr::Call { callee, arguments, .. } => {
                 let callee_val = self.evaluate(callee)?;
-                let mut args = Vec::new();
-                for arg in arguments {
-                    args.push(self.evaluate(arg)?);
-                }
+                let args = arguments
+                    .iter()
+                    .map(|arg| self.evaluate(arg))
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 match callee_val {
                     Value::Function(f) => f.call(self, args),
+                    Value::NativeFunction(f) => f.call(self, args),
                     _ => Err("Can only call functions.".into()),
                 }
             }
@@ -309,6 +348,7 @@ impl Interpreter {
             }
             Value::String(s) => s.clone(),
             Value::Function(func) => format!("<fn {}>", func.name),
+            Value::NativeFunction(native) => format!("<native fn {}>", native.name()),
         }
     }
 
@@ -634,5 +674,13 @@ mod tests {
 
         let result = run_and_capture("print true and false;");
         assert_eq!(result, vec!["false"]);
+    }
+
+    #[test]
+    fn test_clock_function() {
+        let result = run_and_capture("print clock();");
+        assert_eq!(result.len(), 1);
+        let n = result[0].parse::<f64>().unwrap();
+        assert!(n > 0.0);
     }
 }

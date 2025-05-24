@@ -1,7 +1,9 @@
-use std::collections::HashMap;
 use crate::ast::{Expr, Literal, Stmt};
 use crate::token::TokenType;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::Write;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -12,20 +14,21 @@ pub enum Value {
 }
 
 pub struct Interpreter {
-    env: Environment,
+    env: Rc<RefCell<Environment>>,
 }
+
 impl Interpreter {
     pub fn new() -> Self {
         Interpreter {
-            env: Environment::default(),
+            env: Rc::new(RefCell::new(Environment::default())),
         }
     }
 
-    pub fn interpret(&self, expr: &Expr) -> Result<Value, String> {
+    pub fn interpret(&mut self, expr: &Expr) -> Result<Value, String> {
         self.evaluate(expr)
     }
 
-    fn evaluate(&self, expr: &Expr) -> Result<Value, String> {
+    fn evaluate(&mut self, expr: &Expr) -> Result<Value, String> {
         match expr {
             Expr::Literal(lit) => Ok(self.literal_to_value(lit)),
             Expr::Grouping(inner) => self.evaluate(inner),
@@ -46,10 +49,15 @@ impl Interpreter {
             Expr::Variable(token) => {
                 let name = &token.lexeme;
                 self.env
+                    .borrow_mut()
                     .get(name)
                     .ok_or_else(|| format!("Undefined variable '{}'", name))
             }
-            Expr::Binary { left, operator, right } => {
+            Expr::Binary {
+                left,
+                operator,
+                right,
+            } => {
                 let left = self.evaluate(left)?;
                 let right = self.evaluate(right)?;
                 match operator.kind {
@@ -72,6 +80,15 @@ impl Interpreter {
 
                     _ => Err(format!("Unknown binary operator {:?}", operator.kind)),
                 }
+            }
+            Expr::Assign { name, value } => {
+                let val = self.evaluate(value)?;
+
+                self.env
+                    .borrow_mut()
+                    .assign(&name.lexeme, val.clone())
+                    .ok_or_else(|| format!("Undefined variable '{}'", name.lexeme))?;
+                Ok(val)
             }
         }
     }
@@ -100,6 +117,8 @@ impl Interpreter {
         match val {
             Value::Nil => false,
             Value::Boolean(b) => *b,
+            Value::Number(0.0) => false,
+            Value::String(s) => !s.is_empty(),
             _ => true,
         }
     }
@@ -141,7 +160,38 @@ impl Interpreter {
                 } else {
                     Value::Nil
                 };
-                self.env.define(name.lexeme.clone(), value);
+                self.env.borrow_mut().define(name.lexeme.clone(), value);
+                Ok(())
+            }
+            Stmt::Block(statements) => {
+                let new_env = Environment::with_enclosing(self.env.clone());
+                self.execute_block(statements, new_env, output)
+            }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let v = &self.evaluate(condition)?;
+                if self.is_truthy(v) {
+                    self.execute(then_branch, output)
+                } else if let Some(else_stmt) = else_branch {
+                    self.execute(else_stmt, output)
+                } else {
+                    Ok(())
+                }
+            }
+            Stmt::While { condition, body } => {
+                loop {
+                    let cond = self.evaluate(condition)?;
+
+                    let v = self.is_truthy(&cond);
+                    if !v {
+                        break;
+                    }
+
+                    self.execute(body, output)?;
+                }
                 Ok(())
             }
         }
@@ -161,11 +211,30 @@ impl Interpreter {
             Value::String(s) => s.clone(),
         }
     }
+
+    fn execute_block<W: Write>(
+        &mut self,
+        statements: &[Stmt],
+        new_env: Rc<RefCell<Environment>>,
+        output: &mut W,
+    ) -> Result<(), String> {
+        let previous = self.env.clone();
+        self.env = new_env;
+        let result = (|| {
+            for stmt in statements {
+                self.execute(stmt, output)?;
+            }
+            Ok(())
+        })();
+        self.env = previous;
+        result
+    }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Environment {
     values: HashMap<String, Value>,
+    enclosing: Option<Rc<RefCell<Environment>>>,
 }
 
 impl Environment {
@@ -174,7 +243,28 @@ impl Environment {
     }
 
     pub fn get(&self, name: &str) -> Option<Value> {
-        self.values.get(name).cloned()
+        self.values
+            .get(name)
+            .cloned()
+            .or_else(|| self.enclosing.as_ref()?.borrow().get(name))
+    }
+
+    pub fn with_enclosing(enclosing: Rc<RefCell<Environment>>) -> Rc<RefCell<Self>> {
+        Rc::new(RefCell::new(Environment {
+            values: HashMap::new(),
+            enclosing: Some(enclosing),
+        }))
+    }
+
+    pub fn assign(&mut self, name: &str, value: Value) -> Option<()> {
+        if self.values.contains_key(name) {
+            self.values.insert(name.to_string(), value);
+            Some(())
+        } else if let Some(enclosing) = self.enclosing.as_mut() {
+            enclosing.borrow_mut().assign(name, value)
+        } else {
+            None
+        }
     }
 }
 
@@ -183,7 +273,6 @@ mod tests {
     use super::*;
     use crate::parser::Parser;
     use crate::scanner::Scanner;
-    use crate::ast::{Stmt, Expr, Literal};
 
     fn run_and_capture(source: &str) -> Vec<String> {
         let tokens = Scanner::new(source).scan_tokens();
@@ -230,5 +319,34 @@ mod tests {
             run_and_capture("print \"hello \" + \"world\";"),
             vec!["hello world"]
         );
+    }
+
+    #[test]
+    fn test_if_else() {
+        let output = run_and_capture("if (true) print 1; else print 2;");
+        assert_eq!(output, vec!["1"]);
+
+        let output = run_and_capture("if (false) print 1; else print 2;");
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_variable_increment_and_use() {
+        assert_eq!(
+            run_and_capture("var x = 42; if (true) x = x + 2; print x; print x < 45;"),
+            vec!["44", "true"]
+        );
+    }
+
+    #[test]
+    fn test_while_loop() {
+        let output = run_and_capture(
+            "var i = 0;
+         while (i < 3) {
+           print i;
+           i = i + 1;
+         }",
+        );
+        assert_eq!(output, vec!["0", "1", "2"]);
     }
 }

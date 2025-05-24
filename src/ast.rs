@@ -14,6 +14,10 @@ pub enum Expr {
         right: Box<Expr>,
     },
     Variable(Token),
+    Assign {
+        name: Token,
+        value: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -31,5 +35,15 @@ pub enum Stmt {
     Var {
         name: Token,
         initializer: Option<Expr>,
+    },
+    Block(Vec<Stmt>),
+    If {
+        condition: Expr,
+        then_branch: Box<Stmt>,
+        else_branch: Option<Box<Stmt>>,
+    },
+    While {
+        condition: Expr,
+        body: Box<Stmt>,
     },
 }

@@ -9,7 +9,6 @@ pub struct Scanner<'a> {
     tokens: Vec<Token>,
 }
 
-
 impl<'a> Scanner<'a> {
     pub fn new(source: &'a str) -> Self {
         Scanner {
@@ -117,7 +116,6 @@ impl<'a> Scanner<'a> {
         });
     }
 
-
     fn match_char(&mut self, expected: char) -> bool {
         if self.is_at_end() {
             return false;
@@ -190,7 +188,7 @@ impl<'a> Scanner<'a> {
         let value = &self.source[self.start + 1..self.current - 1];
         self.add_token_with_literal(TokenType::String, Some(Literal::String(value.to_string())));
     }
-    
+
     fn identifier(&mut self) {
         while self.peek().is_ascii_alphanumeric() || self.peek() == '_' {
             self.advance();
@@ -224,8 +222,6 @@ fn identifier_type(text: &str) -> TokenType {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,9 +241,8 @@ mod tests {
         assert_eq!(
             result,
             vec![
-                LeftParen, RightParen, LeftBrace, RightBrace,
-                Comma, Dot, Plus, Minus, Star, Slash, Semicolon,
-                Eof
+                LeftParen, RightParen, LeftBrace, RightBrace, Comma, Dot, Plus, Minus, Star, Slash,
+                Semicolon, Eof
             ]
         );
     }
@@ -262,9 +257,8 @@ mod tests {
     fn test_unexpected_char() {
         let result = scan("@");
         assert_eq!(result, vec![Eof]); // мы не добавляем токены на неожиданные символы пока
-        // можно позже улучшить: добавить список ошибок
+                                       // можно позже улучшить: добавить список ошибок
     }
-
 
     #[test]
     fn test_two_char_tokens() {
@@ -272,15 +266,18 @@ mod tests {
         assert_eq!(
             result,
             vec![
-                Bang, BangEqual,
-                Equal, EqualEqual,
-                Less, LessEqual,
-                Greater, GreaterEqual,
+                Bang,
+                BangEqual,
+                Equal,
+                EqualEqual,
+                Less,
+                LessEqual,
+                Greater,
+                GreaterEqual,
                 Eof
             ]
         );
     }
-
 
     #[test]
     fn test_numbers() {

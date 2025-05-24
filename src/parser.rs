@@ -6,7 +6,6 @@
 // unary          → ( "!" | "-" ) unary | primary ;
 // primary        → NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" ;
 
-
 use crate::ast::{Expr, Literal, Stmt};
 use crate::token::{Token, TokenType};
 
@@ -20,12 +19,30 @@ impl Parser {
         Self { tokens, current: 0 }
     }
 
-    // pub fn parse(&mut self) -> Option<Expr> {
-    //     self.expression()
-    // }
+    fn assignment(&mut self) -> Option<Expr> {
+        let expr = self.equality()?; // ← раньше тут была expression
+
+        if self.match_types(&[TokenType::Equal]) {
+            let equals = self.previous().clone();
+            let value = self.assignment()?; // правая часть
+
+            if let Expr::Variable(name) = expr {
+                return Some(Expr::Assign {
+                    name,
+                    value: Box::new(value),
+                });
+            }
+
+            // невалидное lvalue
+            eprintln!("Invalid assignment target at line {}", equals.line);
+            return None;
+        }
+
+        Some(expr)
+    }
 
     fn expression(&mut self) -> Option<Expr> {
-        self.equality()
+        self.assignment()
     }
 
     fn equality(&mut self) -> Option<Expr> {
@@ -135,9 +152,7 @@ impl Parser {
                 self.consume(TokenType::RightParen)?;
                 Some(Expr::Grouping(Box::new(expr)))
             }
-            TokenType::Identifier => {
-                Some(Expr::Variable(token.clone()))
-            }
+            TokenType::Identifier => Some(Expr::Variable(token.clone())),
             _ => None,
         }
     }
@@ -207,6 +222,12 @@ impl Parser {
     fn statement(&mut self) -> Option<Stmt> {
         if self.match_types(&[TokenType::Print]) {
             self.print_statement()
+        } else if self.match_types(&[TokenType::LeftBrace]) {
+            Some(Stmt::Block(self.block()?))
+        } else if self.match_types(&[TokenType::If]) {
+            self.if_statement()
+        } else if self.match_types(&[TokenType::While]) {
+            self.while_statement()
         } else {
             self.expression_statement()
         }
@@ -236,13 +257,54 @@ impl Parser {
         self.consume(TokenType::Semicolon)?;
         Some(Stmt::Var { name, initializer })
     }
+
+    fn block(&mut self) -> Option<Vec<Stmt>> {
+        let mut statements = vec![];
+
+        while !self.check(&TokenType::RightBrace) && !self.is_at_end() {
+            if let Some(stmt) = self.declaration() {
+                statements.push(stmt);
+            }
+        }
+
+        self.consume(TokenType::RightBrace)?;
+        Some(statements)
+    }
+
+    fn if_statement(&mut self) -> Option<Stmt> {
+        self.consume(TokenType::LeftParen)?;
+        let condition = self.expression()?;
+        self.consume(TokenType::RightParen)?;
+
+        let then_branch = Box::new(self.statement()?);
+        let else_branch = if self.match_types(&[TokenType::Else]) {
+            Some(Box::new(self.statement()?))
+        } else {
+            None
+        };
+
+        Some(Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        })
+    }
+
+    fn while_statement(&mut self) -> Option<Stmt> {
+        self.consume(TokenType::LeftParen)?;
+        let condition = self.expression()?;
+        self.consume(TokenType::RightParen)?;
+        let body = Box::new(self.statement()?);
+        Some(Stmt::While { condition, body })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scanner::Scanner;
+    use crate::ast::Expr::Assign;
     use crate::ast::{Expr, Literal, Stmt};
+    use crate::scanner::Scanner;
     use crate::token::TokenType;
 
     fn parse_stmt(source: &str) -> Stmt {
@@ -275,11 +337,52 @@ mod tests {
     fn test_parse_var_declaration() {
         let stmt = parse_stmt("var x = 5;");
         match stmt {
-            Stmt::Var { name, initializer: Some(Expr::Literal(Literal::Number(n))) } => {
+            Stmt::Var {
+                name,
+                initializer: Some(Expr::Literal(Literal::Number(n))),
+            } => {
                 assert_eq!(name.lexeme, "x");
                 assert_eq!(n, 5.0);
             }
             _ => panic!("Expected variable declaration with initializer"),
+        };
+    }
+
+    #[test]
+    fn test_parse_expression() {
+        let stmt = parse_stmt("x = x + 5;");
+        match stmt {
+            Stmt::Expression(Assign { name, value }) => {
+                assert_eq!(name.lexeme, "x");
+                match *value {
+                    Expr::Binary {
+                        left,
+                        operator,
+                        right,
+                    } => {
+                        // left: Variable("x")
+                        match *left {
+                            Expr::Variable(token) => {
+                                assert_eq!(token.lexeme, "x");
+                            }
+                            _ => panic!("Expected left side to be a variable"),
+                        }
+
+                        // operator: +
+                        assert_eq!(operator.kind, TokenType::Plus);
+
+                        // right: Literal(Number(5.0))
+                        match *right {
+                            Expr::Literal(Literal::Number(n)) => {
+                                assert_eq!(n, 5.0);
+                            }
+                            _ => panic!("Expected right side to be a number literal"),
+                        }
+                    } // допустим базовый разбор бинарного выражения
+                    _ => panic!("Expected binary expression as assignment value"),
+                }
+            }
+            _ => panic!("Expected expression with initializer"),
         }
     }
 

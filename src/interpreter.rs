@@ -15,6 +15,18 @@ pub enum Value {
     Function(Rc<LoxFunction>),
     NativeFunction(Rc<dyn LoxCallable>),
     Array(Rc<RefCell<Vec<Value>>>),
+    Class(Rc<LoxClass>),
+    Instance(Rc<RefCell<LoxInstance>>),
+}
+
+impl Value {
+    pub fn as_instance(&self) -> Result<Rc<RefCell<LoxInstance>>, String> {
+        if let Value::Instance(inst) = self {
+            Ok(Rc::clone(inst))
+        } else {
+            Err("Expected instance.".into())
+        }
+    }
 }
 
 impl PartialEq for Value {
@@ -41,6 +53,8 @@ impl std::fmt::Debug for Value {
             Value::Function(func) => write!(f, "<fn {}>", func.name),
             Value::NativeFunction(native) => write!(f, "<native fn {}>", native.name()),
             Value::Array(arr) => write!(f, "Array({:?})", arr),
+            Value::Class(class) => write!(f, "Class({})", class.name),
+            Value::Instance(instance) => write!(f, "Instance({:?})", instance.borrow().class)
         }
     }
 }
@@ -75,22 +89,84 @@ impl PartialEq for LoxFunction {
     }
 }
 
-impl LoxFunction {
-    pub fn call(&self, interpreter: &mut Interpreter, args: Vec<Value>) -> Result<Value, String> {
-        let mut new_env = Environment::with_enclosing(self.closure.clone());
+impl LoxCallable for LoxFunction {
+    fn arity(&self) -> usize {
+        self.params.len()
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn call(&self, interpreter: &mut Interpreter, args: Vec<Value>) -> Result<Value, String> {
+        let env = Environment::with_enclosing(self.closure.clone());
 
         for (param, arg) in self.params.iter().zip(args.into_iter()) {
-            new_env.borrow_mut().define(param.clone(), arg);
+            eprintln!("binding param: {} = {:?}", param, arg);
+            
+            env.borrow_mut().define(param.clone(), arg);
         }
 
-        let result = interpreter.execute_block_with_return(&self.body, new_env);
-
-        match result {
-            Ok(()) => Ok(Value::Nil),
+        match interpreter.execute_block_with_return(&self.body, env) {
+            Ok(_) => Ok(Value::Nil),
             Err(ReturnValue::Return(val)) => Ok(val),
             Err(ReturnValue::Runtime(e)) => Err(e),
         }
     }
+}
+
+impl LoxFunction {
+    pub fn bind(&self, instance: Rc<RefCell<LoxInstance>>) -> Rc<LoxFunction> {
+        let env = Environment::with_enclosing(self.closure.clone());
+        env.borrow_mut().define("this".to_string(), Value::Instance(instance));
+        Rc::new(LoxFunction {
+            name: self.name.clone(),
+            params: self.params.clone(),
+            body: self.body.clone(),
+            closure: env,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LoxClass {
+    pub name: String,
+    pub methods: HashMap<String, Rc<LoxFunction>>,
+}
+
+impl LoxCallable for LoxClass {
+    fn arity(&self) -> usize {
+        if let Some(init) = self.methods.get("init") {
+            init.arity()
+        } else {
+            0
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn call(&self, interpreter: &mut Interpreter, args: Vec<Value>) -> Result<Value, String> {
+        let instance = Rc::new(RefCell::new(LoxInstance {
+            class: Rc::new(self.clone()),
+            fields: HashMap::new(),
+        }));
+
+        // вызов init() если есть
+        if let Some(init) = self.methods.get("init") {
+            let bound = init.bind(instance.clone());
+            bound.call(interpreter, args)?;
+        }
+
+        Ok(Value::Instance(instance))
+    }
+}
+
+#[derive(Debug)]
+pub struct LoxInstance {
+    pub class: Rc<LoxClass>,
+    pub fields: HashMap<String, Value>,
 }
 
 pub struct Interpreter {
@@ -134,7 +210,9 @@ impl Interpreter {
                 self.env
                     .borrow_mut()
                     .get(name)
-                    .ok_or_else(|| format!("Undefined variable '{}'", name))
+                    .ok_or_else(|| {
+                        format!("Undefined variable '{}'", name)
+                    })
             }
             Expr::Binary {
                 left,
@@ -208,6 +286,7 @@ impl Interpreter {
                 match callee_val {
                     Value::Function(f) => f.call(self, args),
                     Value::NativeFunction(f) => f.call(self, args),
+                    Value::Class(c) => c.call(self, args),
                     _ => Err("Can only call functions.".into()),
                 }
             }
@@ -256,6 +335,38 @@ impl Interpreter {
                         }
                     }
                     _ => Err("Can only assign into array[index]".into()),
+                }
+            },
+            Expr::Get { object, name } => {
+                let object_val = self.evaluate(object)?;
+
+                if let Value::Instance(inst) = &object_val {
+                    let inst = inst.borrow();
+
+                    if let Some(val) = inst.fields.get(&name.lexeme) {
+                        return Ok(val.clone());
+                    }
+
+                    if let Some(method) = inst.class.methods.get(&name.lexeme) {
+                        return Ok(Value::Function(method.bind(Rc::clone(&object_val.as_instance()?))));
+                    }
+
+                    return Err(format!("Undefined property '{}'", name.lexeme));
+                }
+
+                Err("Only instances have properties.".into())
+            },
+            Expr::Set { object, name, value } => {
+                eprintln!("🧩 SET: object = {:?}", 1);
+
+                let object_val = self.evaluate(object)?;
+                let value_val = self.evaluate(value)?;
+
+                if let Value::Instance(inst) = object_val {
+                    inst.borrow_mut().fields.insert(name.lexeme.clone(), value_val.clone());
+                    Ok(value_val)
+                } else {
+                    Err("Only instances have fields.".into())
                 }
             }
         }
@@ -373,6 +484,29 @@ impl Interpreter {
                 // только для execute_with_return
                 Err("Unexpected return statement outside of function.".into())
             }
+            Stmt::Class { name, methods } => {
+                let mut method_map = HashMap::new();
+
+                for method in methods {
+                    if let Stmt::Function { name: method_name, params, body } = method {
+                        let func = LoxFunction {
+                            name: method_name.lexeme.clone(),
+                            params: params.iter().map(|t| t.lexeme.clone()).collect(),
+                            body: body.clone(),
+                            closure: self.env.clone(),
+                        };
+                        method_map.insert(method_name.lexeme.clone(), Rc::new(func));
+                    }
+                }
+
+                let class = LoxClass {
+                    name: name.lexeme.clone(),
+                    methods: method_map,
+                };
+
+                self.env.borrow_mut().define(name.lexeme.clone(), Value::Class(Rc::new(class)));
+                Ok(())
+            }
         }
     }
 
@@ -406,7 +540,9 @@ impl Interpreter {
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("[{}]", s)
-            }
+            },
+            Value::Class(class) => format!("<class {}>", class.name),
+            Value::Instance(instance) => format!("<instance {}>", instance.borrow().class.name)
         }
     }
 
@@ -507,6 +643,29 @@ impl Interpreter {
                 })();
                 self.env = previous;
                 result
+            }
+            Stmt::Class { name, methods } => {
+                let mut method_map = HashMap::new();
+
+                for method in methods {
+                    if let Stmt::Function { name: method_name, params, body } = method {
+                        let func = LoxFunction {
+                            name: method_name.lexeme.clone(),
+                            params: params.iter().map(|t| t.lexeme.clone()).collect(),
+                            body: body.clone(),
+                            closure: self.env.clone(), // замыкание
+                        };
+                        method_map.insert(method_name.lexeme.clone(), Rc::new(func));
+                    }
+                }
+
+                let class = LoxClass {
+                    name: name.lexeme.clone(),
+                    methods: method_map,
+                };
+
+                self.env.borrow_mut().define(name.lexeme.clone(), Value::Class(Rc::new(class)));
+                Ok(())
             }
             // обычные без return
             _ => self
@@ -785,5 +944,26 @@ mod tests {
         ",
         );
         assert_eq!(output, vec!["1", "2"]);
+    }
+
+    #[test]
+    fn test_class_instance_init() {
+        let output = run_and_capture(
+            "
+        class Dog {
+            init(name) {
+                this.name = name;
+            }
+
+            speak() {
+                print this.name + \" says woof\";
+            }
+        }
+
+        var d = Dog(\"Rex\");
+        d.speak();
+        ",
+        );
+        assert_eq!(output, vec!["Rex says woof"]);
     }
 }

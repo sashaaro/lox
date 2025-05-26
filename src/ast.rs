@@ -33,6 +33,15 @@ pub enum Expr {
         index: Box<Expr>,
         value: Box<Expr>,
     },
+    Get {
+        object: Box<Expr>,
+        name: Token,
+    },
+    Set {
+        object: Box<Expr>,
+        name: Token,
+        value: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -67,4 +76,8 @@ pub enum Stmt {
         body: Vec<Stmt>,
     },
     Return(Option<Expr>),
+    Class { 
+        name: Token,
+        methods: Vec<Stmt>, // Только Stmt::Function
+    },
 }

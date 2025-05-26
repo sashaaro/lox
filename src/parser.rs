@@ -31,7 +31,13 @@ impl Parser {
                     name,
                     value: Box::new(value),
                 });
-            } else if let Expr::Index { object, index } = expr {
+            } else if let Expr::Get { object, name } = expr {
+                return Some(Expr::Set {
+                    object,
+                    name,
+                    value: Box::new(value),
+                });
+            } else  if let Expr::Index { object, index } = expr {
                 return Some(Expr::SetIndex {
                     object,
                     index,
@@ -229,6 +235,8 @@ impl Parser {
 
     fn match_types(&mut self, types: &[TokenType]) -> bool {
         for t in types {
+            // eprintln!(">> match? {:?} == {:?}", self.peek().kind, t);
+
             if self.check(t) {
                 self.advance();
                 return true;
@@ -274,14 +282,33 @@ impl Parser {
     pub fn parse(&mut self) -> Vec<Stmt> {
         let mut statements = vec![];
         while !self.is_at_end() {
-            if let Some(stmt) = self.declaration() {
+            let result = self.declaration();
+            if let Some(stmt) = result {
                 statements.push(stmt);
+            } else {
+                //eprintln!("Unexpected token: {}", self.previous().lexeme);
             }
         }
         statements
     }
 
+    fn class_declaration(&mut self) -> Option<Stmt> {
+        let name = self.consume(TokenType::Identifier)?;
+        self.consume(TokenType::LeftBrace)?;
+
+        let mut methods = Vec::new();
+        while !self.check(&TokenType::RightBrace) && !self.is_at_end() {
+            methods.push(self.function("method")?);
+        }
+
+        self.consume(TokenType::RightBrace)?;
+        Some(Stmt::Class { name, methods })
+    }
+
     fn declaration(&mut self) -> Option<Stmt> {
+        if self.match_types(&[TokenType::Class]) {
+            return self.class_declaration();
+        }
         if self.match_types(&[TokenType::Fun]) {
             return self.function("function");
         }
@@ -432,10 +459,38 @@ impl Parser {
     }
 
     fn call(&mut self) -> Option<Expr> {
-        let mut expr = self.primary()?;
-        while self.match_types(&[TokenType::LeftParen]) {
-            expr = self.finish_call(expr)?;
+        let mut expr = self.primary()?; // сначала получаем callee
+
+        loop {
+            if self.match_types(&[TokenType::LeftParen]) {
+                // вызов
+                let mut args = vec![];
+                if !self.check(&TokenType::RightParen) {
+                    loop {
+                        args.push(self.expression()?);
+                        if !self.match_types(&[TokenType::Comma]) {
+                            break;
+                        }
+                    }
+                }
+                let paren = self.consume(TokenType::RightParen)?;
+                expr = Expr::Call {
+                    callee: Box::new(expr),
+                    arguments: args,
+                    paren,
+                };
+            } else if self.match_types(&[TokenType::Dot]) {
+                // доступ к полю/методу
+                let name = self.consume(TokenType::Identifier)?;
+                expr = Expr::Get {
+                    object: Box::new(expr),
+                    name,
+                };
+            } else {
+                break;
+            }
         }
+
         Some(expr)
     }
 }
@@ -535,6 +590,52 @@ mod tests {
                 assert_eq!(operator.kind, TokenType::EqualEqual);
             }
             _ => panic!("Expected binary expression statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_class() {
+        let stmt = parse_stmt("
+        class Dog {
+          speak() {
+            print \"woof\";
+          }
+        }");
+        match stmt {
+            Stmt::Class{ name, .. } => {
+                assert_eq!(name.lexeme, "Dog");
+            }
+            _ => panic!("Expected class statement"),
+        }
+    }
+
+
+    #[test]
+    fn test_parse_field_assignment() {
+        let stmt = parse_stmt("this.name = name;");
+
+        match stmt {
+            Stmt::Expression(expr) => match expr {
+                Expr::Set { object, name, value } => {
+                    match *object {
+                        Expr::Variable(ref obj_name) => {
+                            assert_eq!(obj_name.lexeme, "this");
+                        }
+                        _ => panic!("Expected object to be 'this'"),
+                    }
+
+                    assert_eq!(name.lexeme, "name");
+
+                    match *value {
+                        Expr::Variable(ref val_name) => {
+                            assert_eq!(val_name.lexeme, "name");
+                        }
+                        _ => panic!("Expected value to be variable 'name'"),
+                    }
+                }
+                _ => panic!("Expected Expr::Set actual: {:#?}", expr),
+            },
+            _ => panic!("Expected expression statement"),
         }
     }
 }

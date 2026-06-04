@@ -20,3 +20,6 @@ path = "src/main.rs"
 anyhow = "1.0.68"                                # error handling
 bytes = "1.3.0"                                  # helps manage buffers
 thiserror = "1.0.38"                             # error handling
+
+[dev-dependencies]
+ureq = "3"                                       # HTTP-клиент для интеграционных тестов nginx

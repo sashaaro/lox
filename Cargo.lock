@@ -110,6 +110,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "thiserror",
+ "ureq",
 ]
 
 [[package]]

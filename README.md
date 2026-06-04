@@ -92,7 +92,7 @@ http {
         location /admin {
             # пускаем только если заголовок X-Token == "secret"
             lox_guard 'header("x-token") == "secret";';
-            return 200 "ok\n";
+            proxy_pass http://backend;
         }
 
         location /api {
@@ -107,6 +107,22 @@ http {
 Истинное выражение ⇒ запрос идёт дальше по пайплайну nginx; ложное ⇒ `403 Forbidden`.
 
 ```bash
-curl -H 'X-Token: secret' localhost:8080/admin   # → 200 ok
+curl -H 'X-Token: secret' localhost:8080/admin   # → 200
 curl                       localhost:8080/admin   # → 403 Forbidden
+```
+
+> ⚠️ **Фаза выполнения.** Guard работает на *access*-фазе nginx. Директивы, которые
+> завершают запрос раньше — на *rewrite*-фазе (`return`, `rewrite ... last`), — сработают
+> **до** guard-а и обойдут его. Защищайте location'ы, чьё содержимое отдаётся в
+> контент-фазе: `proxy_pass`, `fastcgi_pass`, статика (`root`/`try_files`) и т.п.
+
+### Тестирование модуля
+
+Чистая логика guard-ов покрыта обычными unit-тестами (`cargo test` — без nginx).
+FFI-клей (директива, извлечение контекста запроса, коды ответов) проверяется
+интеграционным тестом, который собирает модуль, поднимает реальный nginx и шлёт запросы.
+Тест помечен `#[ignore]`, т.к. при первом запуске собирает nginx из исходников:
+
+```bash
+cargo test -p codecrafters-interpreter --test nginx_guard -- --ignored --nocapture
 ```

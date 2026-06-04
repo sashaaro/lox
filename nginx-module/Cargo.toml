@@ -1,0 +1,23 @@
+[package]
+name = "ngx-lox"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# ngx-rust: высокоуровневый интерфейс к C API nginx.
+ngx = "0.5"
+# Интерпретатор lox как библиотека (корневой пакет воркспейса).
+lox = { path = "..", package = "codecrafters-interpreter" }
+
+[features]
+# Требуется для сборки динамического модуля (cdylib) вне buildsystem nginx.
+default = ["export-modules"]
+export-modules = []
+# Скачать и собрать исходники nginx автоматически (удобно для CI/локальной проверки;
+# для прод-загрузки версия nginx должна совпадать с целевой).
+vendored = ["ngx/vendored"]

@@ -1,13 +1,4 @@
-mod ast;
-mod core;
-mod interpreter;
-mod parser;
-mod scanner;
-mod token;
-
-use interpreter::Interpreter;
-use parser::Parser;
-use scanner::Scanner;
+use lox::{Interpreter, Parser, Scanner};
 use std::io::{self, Write};
 
 fn main() {

@@ -95,6 +95,8 @@ impl LoxFunction {
 
 pub struct Interpreter {
     env: Rc<RefCell<Environment>>,
+    /// Значение последнего выполненного выражения-оператора (для guard-ов).
+    last: Value,
 }
 
 impl Interpreter {
@@ -104,7 +106,21 @@ impl Interpreter {
         env.borrow_mut()
             .define("clock".into(), Value::NativeFunction(Rc::new(ClockNative)));
 
-        Interpreter { env }
+        Interpreter {
+            env,
+            last: Value::Nil,
+        }
+    }
+
+    /// Определить глобальную переменную/native-функцию в корневом окружении.
+    /// Используется для инжекта контекста запроса в guard-ы (uri, method, header).
+    pub fn define_global(&mut self, name: &str, value: Value) {
+        self.env.borrow_mut().define(name.to_string(), value);
+    }
+
+    /// «Истинность» значения последнего выполненного выражения.
+    pub fn last_truthy(&self) -> bool {
+        self.is_truthy(&self.last)
     }
 
     pub fn interpret(&mut self, expr: &Expr) -> Result<Value, String> {
@@ -281,7 +297,7 @@ impl Interpreter {
         }
     }
 
-    fn is_truthy(&self, val: &Value) -> bool {
+    pub fn is_truthy(&self, val: &Value) -> bool {
         match val {
             Value::Nil => false,
             Value::Boolean(b) => *b,
@@ -318,7 +334,7 @@ impl Interpreter {
                 writeln!(output, "{}", self.stringify(&val)).map_err(|e| e.to_string())
             }
             Stmt::Expression(expr) => {
-                self.evaluate(expr)?;
+                self.last = self.evaluate(expr)?;
                 Ok(())
             }
             Stmt::Var { name, initializer } => {

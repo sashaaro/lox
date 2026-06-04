@@ -195,7 +195,11 @@ extern "C" fn ngx_http_lox_set_guard(
         match args[1].to_str() {
             Ok(s) => conf.guard = Some(s.to_string()),
             Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`lox_guard` argument is not utf-8 encoded");
+                ngx_conf_log_error!(
+                    NGX_LOG_EMERG,
+                    cf,
+                    "`lox_guard` argument is not utf-8 encoded"
+                );
                 return ngx::core::NGX_CONF_ERROR;
             }
         }

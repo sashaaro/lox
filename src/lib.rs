@@ -14,10 +14,7 @@ pub use scanner::Scanner;
 /// `setup` инжектирует контекст в окружение интерпретатора перед запуском —
 /// например переменные `uri`/`method` и native-функцию `header(name)`.
 /// Вывод (`print`) отбрасывается: для guard-ов важен только результат.
-pub fn eval_guard(
-    source: &str,
-    setup: impl FnOnce(&mut Interpreter),
-) -> Result<bool, String> {
+pub fn eval_guard(source: &str, setup: impl FnOnce(&mut Interpreter)) -> Result<bool, String> {
     let tokens = Scanner::new(source).scan_tokens();
     let statements = Parser::new(tokens).parse();
 
